@@ -5,3 +5,33 @@ test.md
 result
 data/norman
 additive.sh
+
+# Local datasets, checkpoints, and generated evaluation artifacts.
+*.h5ad
+*.h5
+*.pkl
+*.npz
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.zip
+*.tar.gz
+model.pt
+VCworld_Data.zip
+dynamic_vcworld.zip
+kg.zip
+
+# Experiment output directories and large result tables/images.
+data/
+data_with_mode/
+cell-eval-outdir/
+perturbqa/results/
+perturbqa/summer_outputs/
+enrichment/
+vcworld/results/
+vcworld/simcontext/result/
+vcworld/temp/
+experiment_results_*.csv
+experiment_results_*.png
+history.csv

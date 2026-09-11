@@ -26,12 +26,47 @@ class Data:
             raise ValueError(data_path + ' does not exist')
             # os.makedirs(data_path)
 
+    @staticmethod
+    def _to_dense_array(x):
+        return x.toarray() if hasattr(x, "toarray") else np.asarray(x)
+
+    @staticmethod
+    def _detect_single_drug_column(adata: sc.AnnData) -> str:
+        candidates = ["condition", "drug", "Drug", "perturbation", "treatment", "compound"]
+        for col in candidates:
+            if col in adata.obs:
+                return col
+        raise ValueError(
+            "Single-drug dataset requires one perturbation column in obs. "
+            f"Tried: {candidates}"
+        )
+
+    @staticmethod
+    def _detect_control_mask(adata: sc.AnnData, drug_col: str):
+        if "is_control" in adata.obs:
+            return adata.obs["is_control"].astype(bool).to_numpy()
+        if "control" in adata.obs:
+            return adata.obs["control"].astype(bool).to_numpy()
+        control_values = {
+            "control",
+            "ctrl",
+            "dmso",
+            "dmso_tf",
+            "dimethyl sulfoxide",
+            "vehicle",
+            "untreated",
+            "mock",
+        }
+        return adata.obs[drug_col].astype(str).str.lower().isin(control_values).to_numpy()
+
         
     def load_data(self, data_name = None, data_path = None):
         self.data_name = data_name
         if data_name in ['norman', 'norman_umi_go_filtered',]:
             self.adata = sc.read_h5ad(os.path.join(self.data_path, data_name + '.h5ad'))
         elif data_name in ['combosciplex', ]:
+            self.adata = sc.read_h5ad(os.path.join(self.data_path, data_name + '.h5ad'))
+        elif os.path.exists(os.path.join(self.data_path, data_name + '.h5ad')):
             self.adata = sc.read_h5ad(os.path.join(self.data_path, data_name + '.h5ad'))
         else:
             raise ValueError(data_name + ' is not a valid data name')
@@ -219,7 +254,80 @@ class Data:
             self.perturbation_dict = {perturbation: i for i, perturbation in enumerate(unique_perturbation)}
             
         else:
-            raise ValueError(self.data_name + ' is not a valid data name')
+            processed_cache = os.path.join(
+                self.data_path,
+                self.data_name,
+                f"processed_n_top_genes_{n_top_genes}.h5ad",
+            )
+            if os.path.exists(processed_cache):
+                self.adata = sc.read_h5ad(processed_cache)
+            else:
+                if not hasattr(self, "adata"):
+                    self.load_data(self.data_name)
+                drug_col = self._detect_single_drug_column(self.adata)
+                if "counts" in self.adata.layers:
+                    self.adata.X = self.adata.layers["counts"].copy()
+                sc.pp.normalize_total(self.adata)
+                sc.pp.log1p(self.adata)
+                sc.pp.highly_variable_genes(self.adata, inplace=True, n_top_genes=n_top_genes)
+                self.adata = self.adata[:, self.adata.var["highly_variable"]].copy()
+
+                self.adata.obs["Drug"] = self.adata.obs[drug_col].astype(str)
+                self.adata.obs["is_control"] = self._detect_control_mask(self.adata, "Drug")
+                self.adata.obs.loc[self.adata.obs["is_control"], "Drug"] = "control"
+                self.adata.obs["condition"] = self.adata.obs["Drug"]
+                self.adata.write(processed_cache)
+
+            perturbed = np.array(sorted(self.adata.obs.loc[~self.adata.obs["is_control"], "Drug"].unique()))
+            if len(perturbed) == 0:
+                raise ValueError(f"{self.data_name} has no non-control drug perturbations")
+
+            if split_method in {"obs_mode", "mode"}:
+                if "mode" not in self.adata.obs:
+                    raise ValueError(
+                        f"{self.data_name} requires obs['mode'] when split_method={split_method!r}"
+                    )
+                self.adata.obs["mode"] = self.adata.obs["mode"].astype(str)
+            elif "mode" in self.adata.obs:
+                self.adata.obs["mode"] = self.adata.obs["mode"].astype(str)
+            elif "split" in self.adata.obs:
+                self.adata.obs["mode"] = self.adata.obs["split"].astype(str)
+            elif split_method == "drug_holdout":
+                split_file = os.path.join(self.data_path, self.data_name, "split_results_drug_holdout.pkl")
+                if os.path.exists(split_file):
+                    with open(split_file, "rb") as f:
+                        self.split_results = pickle.load(f)
+                else:
+                    os.makedirs(os.path.join(self.data_path, self.data_name), exist_ok=True)
+                    self.split_results = []
+                    for i in range(5):
+                        rng = np.random.default_rng(42 + i)
+                        shuffled = perturbed.copy()
+                        rng.shuffle(shuffled)
+                        split_idx = max(1, int(len(shuffled) * 0.2))
+                        self.split_results.append({"test": shuffled[:split_idx].tolist()})
+                    with open(split_file, "wb") as f:
+                        pickle.dump(self.split_results, f)
+                    print("single-drug holdout split results saved")
+                fold = kwargs.get("fold", 0)
+                self.adata.obs["mode"] = "train"
+                self.adata.obs.loc[self.adata.obs["Drug"].isin(self.split_results[fold]["test"]), "mode"] = "test"
+            else:
+                self.adata.obs["mode"] = "train"
+
+            self.adata_train = self.adata[self.adata.obs["mode"] == "train"]
+            self.adata_test = self.adata[
+                (self.adata.obs["mode"] == "test") | (self.adata.obs["is_control"])
+            ]
+            if self.adata_test.n_obs == self.adata.obs["is_control"].sum():
+                self.adata_test = self.adata
+
+            sc.pp.highly_variable_genes(self.adata_test, inplace=True, n_top_genes=infer_top_gene)
+            self.adata_test = self.adata_test[:, self.adata_test.var["highly_variable"]]
+
+            unique_perturbation = np.array(sorted(self.adata.obs["Drug"].unique()))
+            self.unique_perturbation = unique_perturbation
+            self.perturbation_dict = {perturbation: i for i, perturbation in enumerate(unique_perturbation)}
         
         if 'fold' in kwargs.keys():
             fold = kwargs['fold']
@@ -232,7 +340,17 @@ class Data:
         if os.path.exists(mask_path):
             self.mask = torch.load(mask_path)
         else:
-            X = self.adata_train.X.toarray()
+            X_train = self.adata_train.X
+            mask_max_cells = kwargs.get("mask_max_cells", -1)
+            if mask_max_cells is not None and mask_max_cells > 0 and X_train.shape[0] > mask_max_cells:
+                rng = np.random.default_rng(kwargs.get("mask_seed", 0))
+                sample_idx = np.sort(rng.choice(X_train.shape[0], size=mask_max_cells, replace=False))
+                X_train = X_train[sample_idx]
+                print(
+                    f"sampled {mask_max_cells} train cells from {self.adata_train.n_obs} "
+                    "for gene coexpression mask"
+                )
+            X = X_train.toarray() if hasattr(X_train, "toarray") else np.asarray(X_train)
             mask = build_gene_coexpression_graph(X,
                 method="pearson",
                 wgcna_beta=None,
@@ -254,6 +372,10 @@ class Data:
             train_sampler = TrainSampler(self.data_name, self.adata_train, ["Drug1", "Drug2"], self.perturbation_dict)
             test_sampler = TestDataset(self.data_name, self.adata_test, ["Drug1", "Drug2"], self.perturbation_dict)
             return train_sampler , test_sampler, []
+        elif "Drug" in self.adata.obs:
+            train_sampler = TrainSampler(self.data_name, self.adata_train, ["Drug"], self.perturbation_dict)
+            test_sampler = TestDataset(self.data_name, self.adata_test, ["Drug"], self.perturbation_dict)
+            return train_sampler, test_sampler, []
         else:
             raise ValueError(self.data_name + ' is not a valid data name')
             
@@ -275,9 +397,10 @@ class TrainSampler:
         self.adata = adata
         self.perturbation_covariates = perturbation_covariates
         self.adata.obs['perturbation_covariates'] = self.adata.obs[perturbation_covariates].apply(lambda x: '+'.join(x), axis=1)
+        self.control_condition = '+'.join(['control'] * len(perturbation_covariates))
         self._perturbation_covariates = adata.obs['perturbation_covariates'].unique()
         
-        self._perturbation_covariates = self._perturbation_covariates[self._perturbation_covariates != 'control+control']
+        self._perturbation_covariates = self._perturbation_covariates[self._perturbation_covariates != self.control_condition]
         
         self._perturbation_covariates.sort()
         self.perturbation_covariates_dict = {perturbation: i for i, perturbation in enumerate(self._perturbation_covariates)}
@@ -305,7 +428,7 @@ class TrainSampler:
             tgt_batch = torch.from_numpy(self.adata.X[tgt_batch_idx].toarray())
             
             # get data from control
-            src_idx = (self.adata.obs['perturbation_covariates'] == 'control+control').to_numpy().nonzero()[0]
+            src_idx = (self.adata.obs['perturbation_covariates'] == self.control_condition).to_numpy().nonzero()[0]
             src_batch_idx = np.random.choice(src_idx, batch_size)
             
             src_batch = torch.from_numpy(self.adata.X[src_batch_idx].toarray())
@@ -327,9 +450,10 @@ class TestDataset:
         self.adata = adata
         self.perturbation_covariates = perturbation_covariates
         self.adata.obs['perturbation_covariates'] = self.adata.obs[perturbation_covariates].apply(lambda x: '+'.join(x), axis=1)
+        self.control_condition = '+'.join(['control'] * len(perturbation_covariates))
         self._perturbation_covariates = adata.obs['perturbation_covariates'].unique()
         
-        self._perturbation_covariates = self._perturbation_covariates[self._perturbation_covariates != 'control+control']
+        self._perturbation_covariates = self._perturbation_covariates[self._perturbation_covariates != self.control_condition]
         
         self._perturbation_covariates.sort()
         self.perturbation_covariates_dict = {perturbation: i for i, perturbation in enumerate(self._perturbation_covariates)}
@@ -365,7 +489,13 @@ class PerturbationDataset(Dataset):
         self.batch_size = batch_size
         self.perturbations = sampler._perturbation_covariates
         
-        self.control_idx = (sampler.adata.obs['perturbation_covariates'] == 'control+control').to_numpy().nonzero()[0]
+        self.control_idx = (sampler.adata.obs['perturbation_covariates'] == sampler.control_condition).to_numpy().nonzero()[0]
+        if len(self.control_idx) == 0:
+            observed = sampler.adata.obs['perturbation_covariates'].value_counts().head(10).to_dict()
+            raise ValueError(
+                f"No control cells found for condition {sampler.control_condition!r}. "
+                f"Top observed perturbation labels: {observed}"
+            )
         
     def __len__(self):
         

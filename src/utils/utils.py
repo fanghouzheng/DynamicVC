@@ -18,28 +18,35 @@ def set_seed(seed):
 
 def pick_eval_score(agg_results, scheme):
     df = agg_results.to_pandas()
+    if "statistic" in df.columns:
+        mean_rows = df[df["statistic"] == "mean"]
+        if mean_rows.empty:
+            raise ValueError("agg_results has a statistic column but no mean row")
+        row = mean_rows.iloc[0]
+    else:
+        row = df.iloc[0]
 
     if scheme in ["pearson_delta", "mse", "mae", "mse_delta"]:
-        return float(df[scheme].iloc[0])
+        return float(row[scheme])
 
     if scheme == "reverse":
-        return float(df["pr_auc"].iloc[0])
+        return float(row["pr_auc"])
 
     if scheme == "forward":
-        pear = float(df["pearson_delta"].iloc[0])
-        mse  = float(df["mse_delta"].iloc[0])
+        pear = float(row["pearson_delta"])
+        mse  = float(row["mse_delta"])
         alpha = 0.05 
         return pear - alpha * mse
 
     if scheme == "de":
         keys = ["de_spearman_sig", "de_direction_match", "de_sig_genes_recall"]
-        return float(df[keys].iloc[0].mean())
+        return float(row[keys].mean())
 
     if scheme == "composite":
-        pear = float(df["pearson_delta"].iloc[0])
-        mse  = float(df["mse_delta"].iloc[0])
-        pra  = float(df["pr_auc"].iloc[0])
-        de   = float(df[["de_spearman_sig","de_direction_match","de_sig_genes_recall"]].iloc[0].mean())
+        pear = float(row["pearson_delta"])
+        mse  = float(row["mse_delta"])
+        pra  = float(row["pr_auc"])
+        de   = float(row[["de_spearman_sig","de_direction_match","de_sig_genes_recall"]].mean())
         return 0.4*pra + 0.3*de + 0.3*(pear - 0.05*mse)
 
     raise ValueError("unknown scheme")

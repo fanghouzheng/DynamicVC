@@ -71,6 +71,25 @@ An example on additive task.
 bash run.sh
 ```
 
+## DynamicVC downstream pipeline
+
+The reusable implementation for the DynamicVC workflow is documented in
+[`docs/dynamic_vc_pipeline.md`](docs/dynamic_vc_pipeline.md).  It connects
+three independently auditable stages:
+
+1. scDFM conditional flow inference with optional inference-time ODE traces;
+2. gene-level FlowTrace SimContext and time-resolved GO/Reactome enrichment;
+3. VCWorld/GeneTak DE or DIR prompt injection followed by Gemini or vLLM
+   batch inference.
+
+Datasets, checkpoints, prompt dumps, and generated results are intentionally
+excluded from the source release.  The post-processing smoke tests can be run
+without a GPU or a dataset:
+
+```bash
+python -m pytest -q tests/test_dynamic_vc_pipeline.py
+```
+
 ## 🫡 Citation
 
 If you find our work and/or our code useful, please cite us via:

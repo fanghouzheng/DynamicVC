@@ -2,6 +2,7 @@ import accelerate
 import torch
 import torch.nn as nn
 import tyro
+from datetime import timedelta
 from config.config_flow import FlowConfig as Config
 import torch.nn.functional as F
 import time
@@ -24,6 +25,7 @@ from src.data_process.utils import build_generated_anndata
 
 import json
 from accelerate import Accelerator,DistributedDataParallelKwargs
+from accelerate.utils import InitProcessGroupKwargs
 import torchdiffeq
 from tqdm import trange
 import numpy as np
@@ -81,6 +83,71 @@ def mmd2_unbiased_multi_sigma(X, Y, sigmas):
         vals.append(term_xx + term_yy - 2.0 * term_xy)
 
     return torch.stack(vals).mean()
+
+def parse_trace_times(trace_times):
+    times = []
+    for item in str(trace_times).split(','):
+        item = item.strip()
+        if not item:
+            continue
+        t = float(item)
+        if t <= 0.0 or t > 1.0:
+            raise ValueError(f"trace_times must be in (0, 1], got {t}")
+        times.append(t)
+    if not times:
+        raise ValueError("trace_times is empty")
+    return sorted(set(times))
+
+def sanitize_filename(name):
+    return str(name).replace('/', '_').replace('\\', '_').replace(' ', '_')
+
+def wait_for_marker(marker_path, poll_seconds=10):
+    while not os.path.exists(marker_path):
+        time.sleep(poll_seconds)
+
+def select_trace_gene_panel(source, target, gene_ids_trace, gene_names):
+    n_genes = source.shape[1]
+    if config.trace_gene_panel == "all":
+        gene_idx = torch.arange(n_genes, device=source.device)
+    elif config.trace_gene_panel == "infer_top_gene":
+        gene_idx = torch.arange(min(config.infer_top_gene, n_genes), device=source.device)
+    else:
+        raise ValueError(f"Unsupported trace_gene_panel: {config.trace_gene_panel}")
+
+    source = source[:, gene_idx]
+    target = target[:, gene_idx] if target is not None else None
+    gene_ids_trace = gene_ids_trace[gene_idx]
+    gene_names = np.asarray(gene_names)[gene_idx.detach().cpu().numpy()]
+    return source, target, gene_ids_trace, gene_names
+
+def make_initial_noise_like(source, seed=None):
+    if config.noise_type == "Gaussian":
+        if seed is None:
+            return torch.randn_like(source)
+        generator = torch.Generator(device=source.device)
+        generator.manual_seed(int(seed))
+        return torch.randn(
+            source.shape,
+            generator=generator,
+            device=source.device,
+            dtype=source.dtype,
+        )
+    if config.noise_type == "Poisson":
+        if seed is None:
+            return make_lognorm_poisson_noise(
+                target_log=source,
+                alpha=getattr(config, "poisson_alpha", 0.8),
+                per_cell_L=getattr(config, "poisson_target_sum", 1e4),
+            )
+        cuda_devices = [source.device.index] if source.device.type == "cuda" and source.device.index is not None else []
+        with torch.random.fork_rng(devices=cuda_devices):
+            torch.manual_seed(int(seed))
+            return make_lognorm_poisson_noise(
+                target_log=source,
+                alpha=getattr(config, "poisson_alpha", 0.8),
+                per_cell_L=getattr(config, "poisson_target_sum", 1e4),
+            )
+    raise ValueError(f"Unsupported noise_type: {config.noise_type}")
 
 def train_step(source, target, perturbation_id, vf, criterion, accelerator, noise_type='Poisson', mode="predict_y"):
     B = source.shape[0]
@@ -154,10 +221,14 @@ def test(data_sampler, vf, accelerator,  batch_size=128, path='./',vocab=None,sc
             perturbation_id = torch.tensor(vocab.encode(perturbation_name_crisper), dtype=torch.long, device=device)
             perturbation_id = perturbation_id.repeat(source.shape[0],1)
         
-        idx = torch.randperm(source.shape[0])
+        target_n = target.shape[0]
+        eval_n_cells = getattr(config, "eval_n_cells", 128)
+        N = target_n if eval_n_cells < 0 else min(eval_n_cells, target_n)
+        if N <= source.shape[0]:
+            idx = torch.randperm(source.shape[0], device=source.device)[:N]
+        else:
+            idx = torch.randint(source.shape[0], (N,), device=source.device)
         source = source[idx]
-        N = 128
-        source = source[:N]
         
         pred_expressions = []
         for i in trange(0, N, batch_size):
@@ -187,6 +258,9 @@ def test(data_sampler, vf, accelerator,  batch_size=128, path='./',vocab=None,sc
 
     eval_score = None
     if accelerator.is_main_process:
+        pred.write_h5ad(os.path.join(path, 'pred.h5ad'))
+        real.write_h5ad(os.path.join(path, 'real.h5ad'))
+
         evaluator = MetricsEvaluator(
             adata_pred=pred,
             adata_real=real,
@@ -198,8 +272,6 @@ def test(data_sampler, vf, accelerator,  batch_size=128, path='./',vocab=None,sc
         
         results.write_csv(os.path.join(path, 'results.csv'))
         agg_results.write_csv(os.path.join(path, 'agg_results.csv'))
-        pred.write_h5ad(os.path.join(path, 'pred.h5ad'))
-        real.write_h5ad(os.path.join(path, 'real.h5ad'))
 
         eval_score = pick_eval_score(agg_results, scheme)
         print(f"Current evaluation score: {eval_score:.4f}")
@@ -215,16 +287,7 @@ def wrapped_vf(target,t,source,perturbation_id,vf,gene_ids, gene_all):
 
 @torch.no_grad()
 def generate_sample(wrapped_vf,source,condition_vec=None,vf=None,gene_ids=None,gene_all=None,steps=20,method="rk4"):
-    
-    noise_type = config.noise_type
-    if noise_type=="Gaussian":
-        target_noise = torch.randn(source.shape[0],config.infer_top_gene,device=source.device)
-    elif noise_type=="Poisson":
-        target_noise = make_lognorm_poisson_noise(
-            target_log=source,
-            alpha=getattr(config, "poisson_alpha", 0.8),           
-            per_cell_L=getattr(config, "poisson_target_sum", 1e4), 
-        )
+    target_noise = make_initial_noise_like(source)
         
     traj = torchdiffeq.odeint(lambda t,x: wrapped_vf(x,t,source,condition_vec,vf,gene_ids,gene_all),
                               target_noise,
@@ -236,25 +299,236 @@ def generate_sample(wrapped_vf,source,condition_vec=None,vf=None,gene_ids=None,g
     # traj = [target_noise + 0.8*wrapped_vf(target_noise,t,source,condition_vec,vf,gene_ids,gene_all)]
     
     return torch.clamp(traj[-1], min=0)
+
+@torch.no_grad()
+def generate_trace(source, condition_vec=None, vf=None, gene_ids=None, gene_all=None,
+                   trace_times=None, initial_noise=None, method="rk4"):
+    if trace_times is None:
+        trace_times = parse_trace_times(config.trace_times)
+    if initial_noise is None:
+        initial_noise = make_initial_noise_like(source)
+
+    ode_times = sorted(set([0.0, 1.0] + [float(t) for t in trace_times]))
+    ode_times_tensor = torch.tensor(ode_times, device=source.device, dtype=source.dtype)
+    traj = torchdiffeq.odeint(
+        lambda t, x: wrapped_vf(x, t, source, condition_vec, vf, gene_ids, gene_all),
+        initial_noise,
+        ode_times_tensor,
+        atol=1e-4,
+        rtol=1e-4,
+        method=method,
+    )
+
+    records = {}
+    for trace_t in trace_times:
+        trace_t = float(trace_t)
+        trace_idx = min(range(len(ode_times)), key=lambda i: abs(ode_times[i] - trace_t))
+        x_t = traj[trace_idx]
+        t_tensor = torch.full((source.shape[0],), trace_t, device=source.device, dtype=source.dtype)
+        velocity = wrapped_vf(x_t, t_tensor, source, condition_vec, vf, gene_ids, gene_all)
+        x1_hat = x_t + (1.0 - trace_t) * velocity
+        records[str(trace_t)] = {
+            "x_t": x_t.detach(),
+            "velocity": velocity.detach(),
+            "x1_hat": x1_hat.detach(),
+        }
+
+    return records, torch.clamp(traj[-1], min=0)
+
+def summarize_trace_tensor(tensor):
+    return {
+        "mean": tensor.mean(dim=0).detach().cpu().numpy(),
+        "var": tensor.var(dim=0, unbiased=False).detach().cpu().numpy(),
+    }
+
+def adata_rows_to_tensor(adata, row_idx):
+    x = adata.X[row_idx]
+    if hasattr(x, "toarray"):
+        x = x.toarray()
+    return torch.from_numpy(np.asarray(x)).float()
+
+@torch.inference_mode()
+def export_flow_trace(data_sampler, vf, accelerator, path='./', vocab=None):
+    if not accelerator.is_main_process:
+        return
+
+    trace_times = parse_trace_times(config.trace_times)
+    trace_path = os.path.join(path, "trace")
+    os.makedirs(trace_path, exist_ok=True)
+
+    model = accelerator.unwrap_model(vf)
+    was_training = model.training
+    model.eval()
+
+    gene_names_all = list(data_sampler.adata.var_names)
+    gene_ids_trace = torch.tensor(vocab.encode(gene_names_all), dtype=torch.long, device=device)
+    perturbation_name_list = list(data_sampler._perturbation_covariates)
+    if config.trace_max_perturbations > 0:
+        perturbation_name_list = perturbation_name_list[:config.trace_max_perturbations]
+
+    groupby_obs = getattr(config, "trace_groupby_obs", "").strip()
+    if groupby_obs:
+        if groupby_obs not in data_sampler.adata.obs:
+            raise ValueError(f"trace_groupby_obs={groupby_obs!r} not found in adata.obs")
+        group_values = sorted(data_sampler.adata.obs[groupby_obs].astype(str).dropna().unique().tolist())
+    else:
+        group_values = ["pooled"]
+
+    metadata = {
+        "trace_times": trace_times,
+        "trace_n_cells": int(config.trace_n_cells),
+        "trace_n_seeds": int(config.trace_n_seeds),
+        "trace_gene_panel": config.trace_gene_panel,
+        "trace_save_cell_level": bool(config.trace_save_cell_level),
+        "trace_groupby_obs": groupby_obs,
+        "trace_groups": group_values,
+        "noise_type": config.noise_type,
+        "perturbations": perturbation_name_list,
+    }
+    with open(os.path.join(trace_path, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    obs = data_sampler.adata.obs
+    if "is_control" in obs:
+        control_mask = obs["is_control"].astype(bool).to_numpy()
+    else:
+        control_mask = (obs["perturbation_covariates"] == data_sampler.control_condition).to_numpy()
+
+    for group_value in group_values:
+        if groupby_obs:
+            group_mask = (obs[groupby_obs].astype(str) == str(group_value)).to_numpy()
+            group_label = str(group_value)
+            group_path = os.path.join(trace_path, f"{sanitize_filename(groupby_obs)}={sanitize_filename(group_label)}")
+        else:
+            group_mask = np.ones(len(obs), dtype=bool)
+            group_label = "pooled"
+            group_path = trace_path
+
+        source_idx_all = np.flatnonzero(control_mask & group_mask)
+        if len(source_idx_all) == 0:
+            print(f"skip trace group {group_label}: no control cells")
+            continue
+
+        source_all = adata_rows_to_tensor(data_sampler.adata, source_idx_all)
+        n_trace_cells = min(config.trace_n_cells, source_all.shape[0])
+        cell_generator = torch.Generator()
+        cell_generator.manual_seed(0)
+        cell_idx = torch.randperm(source_all.shape[0], generator=cell_generator)[:n_trace_cells]
+        source_all = source_all[cell_idx].to(device)
+
+        for perturbation_name in perturbation_name_list:
+            target_mask = (obs["perturbation_covariates"] == perturbation_name).to_numpy() & group_mask
+            target_idx = np.flatnonzero(target_mask)
+            if len(target_idx) == 0:
+                print(f"skip trace {group_label}/{perturbation_name}: no target cells")
+                continue
+
+            target_all = adata_rows_to_tensor(data_sampler.adata, target_idx).to(device)
+            perturbation_id = torch.tensor(data_sampler.perturbation_covariates_id[target_idx], dtype=torch.long, device=device)
+
+            if config.perturbation_function == 'crisper':
+                perturbation_name_crisper = [inverse_dict[int(p_id)] for p_id in perturbation_id[0].cpu().numpy()]
+                perturbation_id = torch.tensor(vocab.encode(perturbation_name_crisper), dtype=torch.long, device=device)
+                perturbation_id = perturbation_id.repeat(source_all.shape[0], 1)
+            else:
+                perturbation_id = perturbation_id[0].repeat(source_all.shape[0], 1)
+
+            source, target, gene_ids_panel, gene_names_panel = select_trace_gene_panel(
+                source_all, target_all, gene_ids_trace, gene_names_all
+            )
+            perturbation_path = os.path.join(group_path, sanitize_filename(perturbation_name))
+            os.makedirs(perturbation_path, exist_ok=True)
+
+            source_summary = summarize_trace_tensor(source)
+            target_summary = summarize_trace_tensor(target)
+
+            for seed in range(config.trace_n_seeds):
+                initial_noise = make_initial_noise_like(source, seed=seed)
+                records, final = generate_trace(
+                    source=source,
+                    condition_vec=perturbation_id,
+                    vf=model,
+                    gene_ids=gene_ids_panel,
+                    gene_all=gene_ids_panel,
+                    trace_times=trace_times,
+                    initial_noise=initial_noise,
+                )
+
+                x_t = torch.stack([records[str(float(t))]["x_t"] for t in trace_times], dim=0)
+                velocity = torch.stack([records[str(float(t))]["velocity"] for t in trace_times], dim=0)
+                x1_hat = torch.stack([records[str(float(t))]["x1_hat"] for t in trace_times], dim=0)
+
+                payload = {
+                    "perturbation": np.array(str(perturbation_name)),
+                    "cell_line": np.array(str(group_label)),
+                    "trace_groupby_obs": np.array(str(groupby_obs)),
+                    "seed": np.array(seed),
+                    "times": np.array(trace_times, dtype=np.float32),
+                    "gene_names": np.asarray(gene_names_panel).astype(str),
+                    "source_mean": source_summary["mean"],
+                    "source_var": source_summary["var"],
+                    "target_mean": target_summary["mean"],
+                    "target_var": target_summary["var"],
+                    "x_t_mean": x_t.mean(dim=1).detach().cpu().numpy(),
+                    "x_t_var": x_t.var(dim=1, unbiased=False).detach().cpu().numpy(),
+                    "velocity_mean": velocity.mean(dim=1).detach().cpu().numpy(),
+                    "velocity_abs_mean": velocity.abs().mean(dim=1).detach().cpu().numpy(),
+                    "x1_hat_mean": x1_hat.mean(dim=1).detach().cpu().numpy(),
+                    "x1_hat_var": x1_hat.var(dim=1, unbiased=False).detach().cpu().numpy(),
+                    "final_mean": final.mean(dim=0).detach().cpu().numpy(),
+                    "final_var": final.var(dim=0, unbiased=False).detach().cpu().numpy(),
+                }
+                if config.trace_save_cell_level:
+                    payload.update({
+                        "x_t": x_t.detach().cpu().numpy(),
+                        "velocity": velocity.detach().cpu().numpy(),
+                        "x1_hat": x1_hat.detach().cpu().numpy(),
+                        "final": final.detach().cpu().numpy(),
+                    })
+
+                out_file = os.path.join(perturbation_path, f"seed_{seed}.npz")
+                np.savez_compressed(out_file, **payload)
+                print(f"saved flow trace: {out_file}")
+
+    if was_training:
+        model.train()
     
 if __name__ == "__main__":
     config = tyro.cli(Config)
 
+    if torch.cuda.is_available():
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        torch.cuda.set_device(local_rank)
+
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    init_kwargs = InitProcessGroupKwargs(timeout=timedelta(hours=2))
 
     accelerator = Accelerator(
-        kwargs_handlers=[ddp_kwargs]
+        kwargs_handlers=[ddp_kwargs, init_kwargs]
     )
     if accelerator.is_main_process:
         print(config)
         save_path = config.make_path()
         os.makedirs(save_path, exist_ok=True)
     device = accelerator.device
+    if torch.cuda.is_available():
+        torch.cuda.set_device(accelerator.local_process_index)
     
     data_manager = Data('./data')
+    data_manager.data_name = config.data_name
 
-    data_manager.load_data(config.data_name)
-    data_manager.process_data(n_top_genes=config.n_top_genes, split_method=config.split_method, fold=config.fold, use_negative_edge=config.use_negative_edge, k=config.topk)
+    is_known_dataset = config.data_name in ['norman', 'norman_umi_go_filtered', 'combosciplex']
+    if is_known_dataset:
+        data_manager.load_data(config.data_name)
+        data_manager.process_data(n_top_genes=config.n_top_genes, infer_top_gene=config.infer_top_gene, split_method=config.split_method, fold=config.fold, use_negative_edge=config.use_negative_edge, k=config.topk, mask_max_cells=config.mask_max_cells)
+    else:
+        if accelerator.is_main_process:
+            data_manager.load_data(config.data_name)
+            data_manager.process_data(n_top_genes=config.n_top_genes, infer_top_gene=config.infer_top_gene, split_method=config.split_method, fold=config.fold, use_negative_edge=config.use_negative_edge, k=config.topk, mask_max_cells=config.mask_max_cells)
+        accelerator.wait_for_everyone()
+        if not accelerator.is_main_process:
+            data_manager.process_data(n_top_genes=config.n_top_genes, infer_top_gene=config.infer_top_gene, split_method=config.split_method, fold=config.fold, use_negative_edge=config.use_negative_edge, k=config.topk, mask_max_cells=config.mask_max_cells)
+        accelerator.wait_for_everyone()
     train_sampler, valid_sampler, test_dl = data_manager.load_flow_data(batch_size=config.batch_size)
     
     train_dataset = PerturbationDataset(train_sampler, config.batch_size)
@@ -263,8 +537,21 @@ if __name__ == "__main__":
         mask_path = os.path.join(data_manager.data_path, data_manager.data_name,'mask_fold_'+str(config.fold)+'topk_'+str(config.topk)+config.split_method+'_negative_edge'+'.pt')
     else:
         mask_path = os.path.join(data_manager.data_path, data_manager.data_name,'mask_fold_'+str(config.fold)+'topk_'+str(config.topk)+config.split_method+'.pt')
+    vocab = process_vocab(data_manager, config)
+
+    gene_ids = vocab.encode(list(data_manager.adata.var_names))
+    perturbation_ntoken = 0
+    if config.perturbation_function != 'crisper' and hasattr(data_manager, "perturbation_dict"):
+        perturbation_ntoken = max(data_manager.perturbation_dict.values(), default=-1) + 1
+    model_ntoken = max(config.ntoken, len(vocab), perturbation_ntoken)
+    if model_ntoken != config.ntoken and accelerator.is_main_process:
+        print(
+            f"##### expanding model ntoken from {config.ntoken} to {model_ntoken} "
+            f"(vocab={len(vocab)}, perturbations={perturbation_ntoken}) #####"
+        )
+    
     vf = instantiate_model(config.model_type,
-                           ntoken = config.ntoken,
+                           ntoken = model_ntoken,
                            d_model = config.d_model,
                            d_perturbation = config.d_model,
                            fusion_method = config.fusion_method,
@@ -273,10 +560,6 @@ if __name__ == "__main__":
                            )
     
     model_path = config.make_path()
-
-    vocab = process_vocab(data_manager, config)
-
-    gene_ids = vocab.encode(list(data_manager.adata.var_names))
     
     gene_ids = torch.tensor(gene_ids, dtype=torch.long, device=device)
     
@@ -293,10 +576,42 @@ if __name__ == "__main__":
     vf = accelerator.prepare(vf)
     optimizer, scheduler, dataloader = accelerator.prepare(optimizer,scheduler,dataloader)
     inverse_dict = {v: str(k) for k, v in data_manager.perturbation_dict.items()}
+
+    if config.test_only:
+        inference_path = os.path.join(save_path, "test_only")
+        if accelerator.is_main_process:
+            os.makedirs(inference_path, exist_ok=True)
+        accelerator.wait_for_everyone()
+
+        if config.eval_every != 0:
+            test(valid_sampler, vf, accelerator, batch_size=config.batch_size, path=inference_path, vocab=vocab)
+        if config.trace_every > 0:
+            export_flow_trace(valid_sampler, vf, accelerator, path=inference_path, vocab=vocab)
+
+        accelerator.wait_for_everyone()
+        raise SystemExit
+
+    tb_writer = None
+    if config.use_tensorboard and accelerator.is_main_process:
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+        except ImportError as exc:
+            raise ImportError(
+                "TensorBoard monitoring requires tensorboard. "
+                "Install it in the training environment or run without --use_tensorboard."
+            ) from exc
+
+        tb_log_dir = config.tensorboard_log_dir or os.path.join(save_path, "tensorboard")
+        os.makedirs(tb_log_dir, exist_ok=True)
+        tb_writer = SummaryWriter(log_dir=tb_log_dir)
+        print(f"TensorBoard log dir: {tb_log_dir}")
+
     pbar = tqdm.tqdm(total=config.steps, initial=start_iteration)
     iteration = start_iteration
     while iteration < config.steps:
         for batch_data in dataloader:
+            if iteration >= config.steps:
+                break
             
             source = batch_data['src_cell_data'].squeeze(0)
             target = batch_data['tgt_cell_data'].squeeze(0)
@@ -314,6 +629,12 @@ if __name__ == "__main__":
             optimizer.step()
             scheduler.step()
 
+            loss_for_log = accelerator.gather(loss.detach().float().reshape(1)).mean().item()
+            lr_for_log = scheduler.get_last_lr()[0]
+            if tb_writer is not None:
+                tb_writer.add_scalar("train/loss", loss_for_log, iteration)
+                tb_writer.add_scalar("train/lr", lr_for_log, iteration)
+
             
             if iteration % config.print_every == 0:
                 save_path_ = os.path.join(save_path, f'iteration_{iteration}')
@@ -330,12 +651,34 @@ if __name__ == "__main__":
                         save_path=save_path_, 
                         is_best=False
                     )
-                eval_score = test(valid_sampler, vf, accelerator, batch_size=config.batch_size, path=save_path_,vocab=vocab)
+                should_eval = (
+                    iteration != 0
+                    and (
+                        (config.eval_every < 0)
+                        or (config.eval_every > 0 and iteration % config.eval_every == 0)
+                    )
+                )
+                if not should_eval:
+                    if accelerator.is_main_process:
+                        print(f"skip iteration {iteration} full evaluation")
+                else:
+                    eval_score = test(valid_sampler, vf, accelerator, batch_size=config.batch_size, path=save_path_,vocab=vocab)
+
+                should_trace = (
+                    config.trace_every > 0
+                    and iteration != 0
+                    and iteration % config.trace_every == 0
+                )
+                if should_trace:
+                    export_flow_trace(valid_sampler, vf, accelerator, path=save_path_, vocab=vocab)
                 
             accelerator.wait_for_everyone()
             
             pbar.update(1)
-            pbar.set_description(f'loss: {loss.item():.4f}, iteration: {iteration}')
+            pbar.set_description(f'loss: {loss_for_log:.4f}, iteration: {iteration}')
             iteration += 1
-            
+
+    if tb_writer is not None:
+        tb_writer.flush()
+        tb_writer.close()
             

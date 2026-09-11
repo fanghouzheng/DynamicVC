@@ -255,7 +255,7 @@ dependencies:
     - rpds-py==0.26.0
     - safetensors==0.5.3
     - scanpy==1.11.4
-    - scgpt==0.2.4
+    # - scgpt==0.2.4
     - scib==1.1.7
     - scikit-learn==1.7.1
     - scikit-misc==0.5.1

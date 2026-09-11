@@ -36,6 +36,24 @@ class FlowConfig:
     fold: int = 0
     use_negative_edge: bool = False
     topk: int = 15
+    mask_max_cells: int = -1  # >0: sample this many train cells when building gene coexpression mask
+    eval_every: int = -1  # -1: evaluate with print_every; 0: disable eval; >0: evaluate every N iterations
+    eval_n_cells: int = 128  # >0: predicted cells per perturbation; -1: match real target cells
+
+    # Flow trace export for structured SimContext construction.
+    # Disabled by default; set trace_every > 0 to export after matching checkpoints.
+    trace_times: str = "0.2,0.5,0.8,1.0"
+    trace_n_cells: int = 128
+    trace_n_seeds: int = 5
+    trace_every: int = 0
+    trace_max_perturbations: int = -1
+    trace_gene_panel: str = "all"  # all, infer_top_gene
+    trace_save_cell_level: bool = False
+    trace_groupby_obs: str = ""  # e.g. cell_name; empty means pooled controls/targets
+
+    # TensorBoard monitoring.
+    use_tensorboard: bool = False
+    tensorboard_log_dir: str = ""  # empty: <experiment_save_path>/tensorboard
     
     def __post_init__(self):
         if self.data_name == 'norman_umi_go_filtered':
