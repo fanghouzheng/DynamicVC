@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 620" role="img" aria-labelledby="title desc">
+  <title id="title">DynamicVC three-stage evidence pipeline</title>
+  <desc id="desc">Control and perturbation data enter a conditional flow model. ODE traces become dynamic state context and pathway programs. Static biological context and dynamic context enter DE and DIR prompts for LLM reasoning.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1"><stop stop-color="#f7f9fc"/><stop offset="1" stop-color="#eef3f9"/></linearGradient>
+    <linearGradient id="blue" x1="0" x2="1"><stop stop-color="#dce9f8"/><stop offset="1" stop-color="#b8cbe5"/></linearGradient>
+    <linearGradient id="gold" x1="0" x2="1"><stop stop-color="#fff2d8"/><stop offset="1" stop-color="#f8d59d"/></linearGradient>
+    <linearGradient id="rose" x1="0" x2="1"><stop stop-color="#f9e4e0"/><stop offset="1" stop-color="#efc7c1"/></linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#19324d" flood-opacity=".12"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L10,4 L0,8 z" fill="#6c829b"/></marker>
+  </defs>
+  <rect width="1400" height="620" rx="28" fill="url(#bg)"/>
+  <text x="70" y="62" font-family="Arial,sans-serif" font-size="30" font-weight="700" fill="#17324d">DynamicVC</text>
+  <text x="70" y="94" font-family="Arial,sans-serif" font-size="17" fill="#58718b">From perturbation prediction to trajectory-grounded reasoning</text>
+  <g filter="url(#shadow)">
+    <rect x="55" y="135" width="385" height="395" rx="22" fill="white" stroke="#abc4df" stroke-width="2"/>
+    <rect x="55" y="135" width="385" height="65" rx="22" fill="url(#blue)"/>
+    <text x="85" y="176" font-family="Arial,sans-serif" font-size="21" font-weight="700" fill="#17324d">1  Perturbation prediction</text>
+    <text x="85" y="235" font-family="Arial,sans-serif" font-size="16" fill="#365570">Control cells + perturbation</text>
+    <text x="85" y="266" font-family="Arial,sans-serif" font-size="16" fill="#365570">→ conditional scDFM vector field</text>
+    <text x="85" y="297" font-family="Arial,sans-serif" font-size="16" fill="#365570">→ ODE generation</text>
+    <g transform="translate(85 330)" fill="none" stroke="#28739b" stroke-width="3"><path d="M0 95 C35 10,65 110,100 30 S165 105,210 18"/><circle cx="35" cy="49" r="6" fill="#ef8c73"/><circle cx="100" cy="30" r="6" fill="#ef8c73"/><circle cx="165" cy="65" r="6" fill="#ef8c73"/><circle cx="210" cy="18" r="6" fill="#ef8c73"/></g>
+    <text x="85" y="475" font-family="Arial,sans-serif" font-size="14" fill="#58718b">X<tspan baseline-shift="sub">t</tspan> · v<tspan baseline-shift="sub">t</tspan> · x̂<tspan baseline-shift="sub">1</tspan>(t) · final</text>
+  </g>
+  <path d="M455 332 H500" stroke="#6c829b" stroke-width="4" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)">
+    <rect x="510" y="135" width="385" height="395" rx="22" fill="white" stroke="#e0c58d" stroke-width="2"/>
+    <rect x="510" y="135" width="385" height="65" rx="22" fill="url(#gold)"/>
+    <text x="540" y="176" font-family="Arial,sans-serif" font-size="21" font-weight="700" fill="#4b3a1b">2  Dynamic StateContext</text>
+    <text x="540" y="235" font-family="Arial,sans-serif" font-size="16" fill="#66502b">FlowTrace NPZ</text>
+    <text x="540" y="266" font-family="Arial,sans-serif" font-size="16" fill="#66502b">→ gene-level SimContext</text>
+    <text x="540" y="297" font-family="Arial,sans-serif" font-size="16" fill="#66502b">→ GO / Reactome programs</text>
+    <g transform="translate(550 335)" fill="#f0c77e" stroke="#936d2e" stroke-width="2"><circle cx="22" cy="22" r="13"/><circle cx="72" cy="8" r="13"/><circle cx="112" cy="45" r="13"/><circle cx="165" cy="20" r="13"/><circle cx="213" cy="62" r="13"/><path d="M34 18 L60 11 M82 16 L102 37 M125 40 L153 24 M178 27 L202 55" fill="none" stroke="#936d2e"/></g>
+    <text x="540" y="475" font-family="Arial,sans-serif" font-size="14" fill="#816b43">direction · onset · velocity · stability · uncertainty</text>
+  </g>
+  <path d="M910 332 H955" stroke="#6c829b" stroke-width="4" marker-end="url(#arrow)"/>
+  <g filter="url(#shadow)">
+    <rect x="965" y="135" width="380" height="395" rx="22" fill="white" stroke="#ddb0aa" stroke-width="2"/>
+    <rect x="965" y="135" width="380" height="65" rx="22" fill="url(#rose)"/>
+    <text x="995" y="176" font-family="Arial,sans-serif" font-size="21" font-weight="700" fill="#55312d">3  Evidence-grounded reasoning</text>
+    <text x="995" y="235" font-family="Arial,sans-serif" font-size="16" fill="#684843">Static BioContext + dynamic context</text>
+    <text x="995" y="266" font-family="Arial,sans-serif" font-size="16" fill="#684843">→ VCWorld / GeneTak prompts</text>
+    <text x="995" y="297" font-family="Arial,sans-serif" font-size="16" fill="#684843">→ Gemini or local vLLM</text>
+    <g transform="translate(1000 337)" font-family="Arial,sans-serif" font-size="15" fill="#684843"><rect width="300" height="35" rx="8" fill="#fff4f1"/><text x="15" y="23">DE: yes / no / insufficient</text><rect y="48" width="300" height="35" rx="8" fill="#fff4f1"/><text x="15" y="71">DIR: task-specific adapter</text></g>
+    <text x="995" y="475" font-family="Arial,sans-serif" font-size="14" fill="#84605b">prediction → context → hypothesis</text>
+  </g>
+  <text x="70" y="580" font-family="Arial,sans-serif" font-size="13" fill="#71859a">ODE time is generative-flow position; all downstream evidence is model-derived and requires biological validation.</text>
+</svg>
