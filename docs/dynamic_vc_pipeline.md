@@ -1,21 +1,24 @@
 # DynamicVC pipeline guide
 
-DynamicVC is one evidence flow with three independently inspectable stages:
+DynamicVC extends the **VCWorld framework** with dynamic evidence. VCWorld provides the query, context, and DE/DIR task organization; the three stages below describe the dynamic extension within that framework. scDFM is the current prediction module.
 
 ```text
-H5AD + perturbation → conditional flow prediction
-  → FlowTrace (X_t, v_t, x1_hat, final)
-  → SimContext + GO/Reactome programs
-  → Dynamic StateContext + Static BioContext
-  → VCWorld/GeneTak DE/DIR prompts
-  → Gemini or vLLM hypotheses
+VCWorld framework: query (perturbation, gene, cell_line) + DE/DIR task
+  ├─ Static BioContext from task prompts / external knowledge components
+  └─ DynamicVC extension
+       H5AD + perturbation → scDFM prediction module
+         → FlowTrace (X_t, v_t, x1_hat, final)
+         → SimContext + GO/Reactome programs → Dynamic StateContext
+  Static BioContext + Dynamic StateContext
+    → VCWorld evidence integration and task prompts
+    → GeneTak / LLM integration via API or vLLM → task hypotheses
 ```
 
-The stages communicate through files, so model output, interpretation, prompt construction, and LLM results can be audited separately.
+The stages communicate through files, so model output, interpretation, prompt construction, and LLM results can be audited separately. This core repository includes the dynamic extension and selected integration components; it does not bundle the complete VCWorld knowledge/retrieval or benchmark stack.
 
 ## 1. Flow prediction and FlowTrace
 
-`src/script/run.py` loads an H5AD dataset through `src/data_process/data.py`, constructs the gene vocabulary and co-expression mask, instantiates the active flow model, and trains or restores a checkpoint. The current factory path is `model_type=origin`. In `predict_y`, the model learns a conditional vector field from a noise-to-target interpolation; ODE inference generates a response conditioned on control expression and perturbation identity.
+The prediction module supplies the cellular responses used to construct VCWorld's additional dynamic context. `src/script/run.py` loads an H5AD dataset through `src/data_process/data.py`, constructs the gene vocabulary and co-expression mask, instantiates the scDFM flow model, and trains or restores a checkpoint. The current factory path is `model_type=origin`. In `predict_y`, the model learns a conditional vector field from a noise-to-target interpolation; ODE inference generates a response conditioned on control expression and perturbation identity.
 
 `run.sh` is the original Norman additive training example. It is a starting point, not a portable one-click experiment: data, checkpoint, device, environment, and split settings must match.
 
@@ -79,7 +82,9 @@ python src/script/enrich_simcontext_programs.py \
 
 For each perturbation/context, positive and negative genes are selected at each saved flow position. A hypergeometric over-representation test and Benjamini-Hochberg correction produce pathway rows and prompt-ready records. The background is the genes present in that SimContext group, so changing the gene panel changes the enrichment universe. Fallback overlaps are retained as explicitly non-significant context.
 
-## 3. Prompt injection and DE/DIR reasoning
+## 3. VCWorld evidence integration and DE/DIR reasoning
+
+The query and task originate in the VCWorld framework. Original task prompts supply Static BioContext; the preceding stages supply Dynamic StateContext. The injector joins these sources for the same query before GeneTak/LLM task execution.
 
 ### Inject dynamic context
 
@@ -119,9 +124,11 @@ The current runners normalize generated labels and optionally score A/B/C choice
 python -m pytest -q tests/test_dynamic_vc_pipeline.py
 ```
 
-The smoke tests cover post-processing fixtures, not model quality, GPU behavior, API availability, or pathway validity. Keep H5AD files, checkpoints, KG archives, prompts, and generated results outside the source release. Static KG construction/retrieval and benchmark scoring are integration points. Treat Dynamic StateContext as model-derived soft evidence requiring biological validation.
+The smoke tests cover post-processing fixtures, not model quality, GPU behavior, API availability, or pathway validity. Keep H5AD files, checkpoints, KG archives, prompts, and generated results outside the source release. VCWorld is the framework foundation; its static KG construction/retrieval and complete benchmark scoring remain integration points for this core release. Treat Dynamic StateContext as model-derived soft evidence requiring biological validation.
 
 ## Upstream resources
+
+The links below support the scDFM prediction component. Framework attribution to VCWorld and the role of each component are described in the [README](../README.md#framework-foundation-and-component-attribution).
 
 - Norman: <https://figshare.com/articles/dataset/Norman_et_al_2019_Science_labeled_Perturb-seq_data/24688110>
 - ComboSciPlex: <https://figshare.com/articles/dataset/combosciplex/25062230>
