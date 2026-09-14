@@ -1,98 +1,115 @@
-<p align="center">
-  <img src="assets/logo.png" alt="scDFN logo" width="400" />
-</p>
+# DynamicVC
 
-# scDFM: Distributional Flow Matching for Robust Single-Cell Perturbation Prediction (ICLR 2026)
+### Extending VCWorld with Dynamic Evidence for Perturbation Reasoning
 
-[![arXiv](https://img.shields.io/badge/arXiv-2601.01829-b31b1b?logo=arxiv)](https://arxiv.org/abs/2602.07103)
-[![OpenReview](https://img.shields.io/badge/OpenReview-Forum-2D7FF9?logo=openreview&logoColor=white)](https://openreview.net/forum?id=QSGanMEcUV)
-[![Codebase](https://img.shields.io/badge/Codebase-GitHub-181717?logo=github)](https://github.com/AI4Science-WestlakeU/scDFM)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?logo=open-source-initiative&logoColor=white)](LICENSE)
-[![YouTube](https://img.shields.io/badge/YouTube-Video-FF0000?logo=youtube&logoColor=white)](https://youtu.be/T4vNEsp7eLs)
-[![Slides](https://img.shields.io/badge/Slides-PDF-EC1C24?logo=adobeacrobatreader&logoColor=white)](assets/scdfm_PPT.pdf)
+[中文说明](README.zh-CN.md) · [Pipeline guide](docs/dynamic_vc_pipeline.md) · [Project narrative / 项目叙事](docs/project_story.zh-CN.md) · [MIT license](LICENSE)
 
-Official repo for the paper [scDFM](URL), ICLR 2026. <br />
-Chenglei Yu<sup>∗1,2</sup>, [Chuanrui Wang](https://wang-cr.github.io/)<sup>∗1</sup>, Bangyan Liao<sup>1,2</sup> & [Tailin Wu](https://tailin.org/)<sup>†1</sup>.<br />
+**DynamicVC builds on the VCWorld framework and extends its biological reasoning workflow with model-derived dynamic evidence.** Within VCWorld's query, context, and DE/DIR task structure, DynamicVC integrates a single-cell perturbation predictor, converts its inference trajectories into gene-level **SimContext** and GO/Reactome pathway evidence, and combines this **Dynamic StateContext** with **Static BioContext** for LLM reasoning. The current flow prediction module uses scDFM.
 
-<sup>1</sup>School of Engineering, Westlake University; 
-<sup>2</sup>Zhejaing University;
+The organizing question is: **How can VCWorld reason over a perturbation using both static biological knowledge and dynamic model evidence?** The framework establishes the query and task; DynamicVC supplies the additional evidence through three stages: **predict the response → contextualize the trajectory → integrate the evidence in VCWorld reasoning**.
 
-</sup>*</sup>Equal contribution, </sup>†</sup>Corresponding authors
+![DynamicVC extends the VCWorld framework with flow prediction and dynamic evidence](assets/dynamicvc-overview.svg)
 
-----
+## Framework and component roles
 
-## Overview 
-We propose a novel distributional flow matching framework (scDFM) for robust single-cell perturbation prediction, which models the full distribution of perturbed cellular expression profiles conditioned on control states, thereby overcoming limitations of existing methods that rely on cell-level correspondences and fail to capture population-level transcriptional shifts.
+| Role | Component | Place in DynamicVC |
+| --- | --- | --- |
+| **Framework foundation** | **VCWorld** | Organizes biological queries, static context, evidence integration, and DE/DIR reasoning tasks |
+| **Dynamic evidence extension** | **DynamicVC** | Adds FlowTrace, gene-level SimContext, and pathway programs to that framework |
+| **Prediction module** | **scDFM** | Supplies the current conditional flow model and generated cellular responses |
+| **Task/model integration** | **GeneTak and LLM runners** | Connects task prompts to compatible models through API or local vLLM generation |
 
-Framework of paper:
+This core release contains the dynamic extension and selected integration components. Static KG construction/retrieval and the complete benchmark evaluator remain external integration points.
 
-<a href="url"><img src="assets/fig1.png" align="center" width="600" ></a>
+## Three connected stages
 
-## Install dependencies 
+| Stage | Question | Implementation | Main output |
+| --- | --- | --- | --- |
+| **1. Perturbation prediction** | What expression profiles does the model predict under a perturbation? | scDFM conditional flow training and ODE inference | Predicted expression profiles and optional FlowTrace NPZ files |
+| **2. Dynamic evidence construction** | How do generated gene states vary along the flow, and which pathways do they overlap with? | FlowTrace → gene-level SimContext → GO/Reactome enrichment | Gene and pathway evidence in JSONL |
+| **3. VCWorld evidence integration and reasoning** | What do dynamic predictions and static biological context support for a query? | VCWorld task prompts + dynamic evidence → API or local vLLM generation | Generated answers, normalized labels, and optional choice scores |
+
+### 1. Predict cellular responses
+
+The scDFM prediction module supplies a dynamic evidence source for the VCWorld-based workflow. It conditions a vector field on control expression, perturbation identity, and gene identities. Its `predict_y` training path learns from noisy-to-target interpolants, with an optional distributional MMD loss. At inference, ODE integration generates expression profiles from an initial noise sample while retaining the control state as a condition.
+
+The original prediction task remains independently usable. DynamicVC adds optional **FlowTrace** export: sampled path states `X_t`, velocities `v_t`, local endpoint estimates `x1_hat`, and final predictions, indexed by perturbation, cell context, and seed.
+
+Entry points: [`run.sh`](run.sh), [`src/script/run.py`](src/script/run.py), [`config/config_flow.py`](config/config_flow.py).
+
+### 2. Construct dynamic biological evidence
+
+**FlowTrace** is the numerical record; **SimContext** is its structured gene-level interpretation. The converter summarizes deviations from the control mean, trajectory direction and pattern, onset along the flow, velocity pattern, sign stability, and uncertainty heuristics. GO/Reactome over-representation analysis adds pathway context separately for saved ODE times and directions.
+
+Together, the gene and pathway records form the **Dynamic StateContext** added to VCWorld's evidence context. Path state and velocity are primary trajectory evidence; endpoint forecasts provide complementary summaries.
+
+Entry points: [`build_simcontext_from_trace.py`](src/script/build_simcontext_from_trace.py), [`enrich_simcontext_programs.py`](src/script/enrich_simcontext_programs.py).
+
+### 3. Integrate evidence in VCWorld reasoning
+
+VCWorld supplies the framework for a query `(perturbation, gene, cell_line)` and its biological reasoning task. Existing task prompts carry **Static BioContext**, such as drug, target, pathway, gene, and cell-line information. DynamicVC's injector adds matching **Dynamic StateContext** within that workflow. GeneTak task/model integration and the included runners connect enriched prompts to a Gemini/OpenAI-compatible API or a compatible local checkpoint through vLLM.
+
+- **DE** asks whether the queried gene is differentially expressed under the perturbation.
+- **DIR** asks about the direction of the response.
+- **Evidence sufficiency** expresses whether the available evidence supports an answer.
+
+The included runners normalize and score `yes / no / insufficient`; the API runner's optional choice-scoring prompt is DE-specific. Directional prompts can be used for generation, but structured `UP / DOWN / NO CHANGE` parsing and DIR benchmark scoring require a task-specific adapter. See the [task contract](docs/dynamic_vc_pipeline.md#de-and-dir-task-contract).
+
+Entry points: [`inject_simcontext_into_de_prompts_v2.py`](src/script/inject_simcontext_into_de_prompts_v2.py), [`batch_gemini_infer.py`](vcworld/pipeline/batch_gemini_infer.py), [`batch_vllm_infer.py`](VCworld_Data/batch_vllm_infer.py).
+
+## Repository map
+
+```text
+DynamicVC/
+├── config/config_flow.py            # Model, training, evaluation, and trace settings
+├── src/
+│   ├── data_process/               # H5AD preparation, splits, and cell samplers
+│   ├── models/                     # scDFM prediction module and related components
+│   ├── flow_matching/              # Paths, schedulers, solvers, and OT utilities
+│   ├── tokenizer/                  # Gene vocabulary and tokenization
+│   ├── loss/                       # Metric utilities
+│   ├── utils/                      # Checkpoints, preprocessing, and graph utilities
+│   └── script/
+│       ├── run.py                  # Stage 1: train, predict, and export FlowTrace
+│       ├── build_simcontext_from_trace.py
+│       ├── enrich_simcontext_programs.py
+│       └── inject_simcontext_into_de_prompts_v2.py
+├── vcworld/pipeline/batch_gemini_infer.py
+├── VCworld_Data/batch_vllm_infer.py
+├── tests/                          # Small post-processing smoke tests
+├── docs/                           # Workflow, contracts, and project narrative
+├── assets/                         # DynamicVC overview and inherited scDFM assets
+├── environment.yml                 # Inherited Linux/CUDA training environment
+└── run.sh                          # Original Norman additive training example
 ```
-conda env create -f environment.yml
-```
 
-##  ⏬ Dataset download
+The directory names preserve existing import paths and script entry points. The current model factory selects `model_type=origin`; other inherited model files are not all exposed as runnable configurations.
 
-Put dataset into data file:
+## Start here
 
-- [Norman](https://figshare.com/articles/dataset/Norman_et_al_2019_Science_labeled_Perturb-seq_data/24688110)
-- [Combosciplex subset of sciplex v3](https://figshare.com/articles/dataset/combosciplex/25062230?file=44229635)
-### Alternative Data Access
-
-We also provide the datasets via [Google Drive](https://drive.google.com/drive/folders/1cNpYAt9jVWZN82miNZtkP10YeSo7hufL?usp=sharing). This folder contains:
-- The **Norman** dataset and its corresponding data splits.
-- The **ComboSciPlex** dataset.
-
-### Pretrained checkpoints
-
-We also provide pretrained checkpoints via [Google Drive](https://drive.google.com/file/d/1ObRTXCt5_H3TIC54A6nOCKycltq88BwX/view?usp=drive_link), including:
-- **Norman** checkpoints for two settings.
-- **ComboSciPlex** checkpoints.
-
-Example directory layout after download (relative to repo root):
-```
-scDFM/
-├─ data/
-│  ├─ norman.h5ad
-│  └─ combosciplex.h5ad
-├─ src/
-│  └─ ...
-└─ run.sh
-```
-
-
-
-## 📥 Training
-
-An example on additive task.
-```bash
-bash run.sh
-```
-
-## DynamicVC downstream pipeline
-
-The reusable implementation for the DynamicVC workflow is documented in
-[`docs/dynamic_vc_pipeline.md`](docs/dynamic_vc_pipeline.md).  It connects
-three independently auditable stages:
-
-1. scDFM conditional flow inference with optional inference-time ODE traces;
-2. gene-level FlowTrace SimContext and time-resolved GO/Reactome enrichment;
-3. VCWorld/GeneTak DE or DIR prompt injection followed by Gemini or vLLM
-   batch inference.
-
-Datasets, checkpoints, prompt dumps, and generated results are intentionally
-excluded from the source release.  The post-processing smoke tests can be run
-without a GPU or a dataset:
+In a Python 3.10+ environment with NumPy and pytest installed, run from the repository root:
 
 ```bash
 python -m pytest -q tests/test_dynamic_vc_pipeline.py
 ```
 
-## 🫡 Citation
+The two smoke tests exercise synthetic trace-to-SimContext conversion and basic enrichment/prompt formatting without a GPU. They do not validate full model inference or biological performance.
 
-If you find our work and/or our code useful, please cite us via:
+Follow the [pipeline guide](docs/dynamic_vc_pipeline.md) for data requirements, training, trace export, enrichment, prompt formatting, and both LLM backends. You can enter at any stage for which you already have the required artifacts.
+
+The training environment is a Linux/CUDA export. Local vLLM inference requires its own compatible model/runtime environment; the training environment does not include vLLM. Datasets, checkpoints, knowledge-graph files, benchmark prompts, and generated results are external artifacts.
+
+## Interpretation and scope
+
+ODE time is a coordinate of the learned generative flow. It is not calibrated experimental time, and model velocity is not an RNA-velocity measurement. SimContext labels and pathway overlaps describe model-derived evidence; their biological relevance and their effect on DE/DIR accuracy require evaluation.
+
+This release supplies prediction, trace interpretation, enrichment, prompt injection, and batch-generation components. Static KG construction/retrieval and a complete DE/DIR benchmark evaluator are external integration points. A joint structured DE/DIR/confidence output contract and calibrated biological confidence scores are not yet implemented.
+
+## Framework foundation and component attribution
+
+**VCWorld is the framework foundation of DynamicVC.** DynamicVC extends that framework with flow-derived Dynamic StateContext and pathway evidence for perturbation reasoning. GeneTak and the LLM runners provide task/model integration within this workflow.
+
+The current prediction module is derived from [scDFM](https://github.com/AI4Science-WestlakeU/scDFM). Its model code, original training example, and assets retain their upstream attribution. The following citation credits that prediction component:
 
 ```bibtex
 @inproceedings{yu2026scdfm,
@@ -104,6 +121,4 @@ If you find our work and/or our code useful, please cite us via:
 }
 ```
 
-## 📚 Related Resources
-
-- AI for Scientific Simulation and Discovery Lab: https://github.com/AI4Science-WestlakeU
+Upstream [data and checkpoint links](docs/dynamic_vc_pipeline.md#upstream-resources) are collected in the pipeline guide. The source retains the [MIT license](LICENSE).

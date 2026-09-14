@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">DynamicVC: dynamic evidence within the VCWorld framework</title>
+  <desc id="desc">VCWorld is the framework foundation for queries, static context, and DE/DIR reasoning. Inside that framework, DynamicVC connects an scDFM prediction module to FlowTrace, SimContext, and pathway evidence. Static and dynamic context feed task prompts and GeneTak or LLM integration.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="#607b98"/></marker>
+  </defs>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <rect width="1400" height="760" rx="24" fill="#f6f8fc"/>
+    <text x="60" y="56" font-size="32" font-weight="700" fill="#16334d">DynamicVC</text>
+    <text x="60" y="86" font-size="18" fill="#516981">Extending VCWorld with dynamic evidence for perturbation reasoning</text>
+    <rect x="30" y="115" width="1340" height="576" rx="22" fill="#ecf2f9" stroke="#728caa" stroke-width="2"/>
+    <text x="58" y="152" font-size="23" font-weight="700" fill="#16334d">VCWorld framework foundation</text>
+    <text x="1000" y="150" font-size="15" fill="#516981">Query · Context · DE / DIR tasks</text>
+    <rect x="55" y="174" width="1290" height="54" rx="10" fill="#d9e5f3"/>
+    <text x="78" y="208" font-size="17" fill="#294b6a">Query: perturbation · gene · cell line</text>
+    <text x="640" y="208" font-size="17" fill="#294b6a">Static BioContext: drug · target · pathway · gene · cell background</text>
+    <path d="M248 228 V266" fill="none" stroke="#607b98" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M1152 228 V266" fill="none" stroke="#607b98" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+    <rect x="55" y="278" width="385" height="324" rx="16" fill="#fff" stroke="#a6c0dc" stroke-width="1.5"/>
+    <rect x="55" y="278" width="385" height="56" rx="16" fill="#dce9f8"/>
+    <text x="78" y="313" font-size="21" font-weight="700" fill="#17324d">1  Prediction module</text>
+    <text x="78" y="370" font-size="18" font-weight="700" fill="#365570">scDFM conditional flow model</text>
+    <text x="78" y="402" font-size="16" fill="#365570">Control cells + perturbation</text>
+    <text x="78" y="431" font-size="16" fill="#365570">→ generated expression profiles</text>
+    <path d="M82 518 C125 450,153 542,192 480 S265 534,332 468" fill="none" stroke="#28739b" stroke-width="3"/>
+    <circle cx="192" cy="480" r="5" fill="#e78971"/>
+    <circle cx="332" cy="468" r="5" fill="#e78971"/>
+    <text x="78" y="572" font-size="15" fill="#516981">FlowTrace: X_t · v_t · x1_hat · final</text>
+
+    <path d="M451 444 H498" fill="none" stroke="#607b98" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="510" y="278" width="385" height="324" rx="16" fill="#fff" stroke="#dec58d" stroke-width="1.5"/>
+    <rect x="510" y="278" width="385" height="56" rx="16" fill="#fae8c4"/>
+    <text x="533" y="313" font-size="21" font-weight="700" fill="#4b3a1b">2  Dynamic evidence extension</text>
+    <text x="533" y="370" font-size="18" font-weight="700" fill="#66502b">Dynamic StateContext</text>
+    <text x="533" y="402" font-size="16" fill="#66502b">FlowTrace → gene-level SimContext</text>
+    <text x="533" y="431" font-size="16" fill="#66502b">→ GO / Reactome pathway programs</text>
+    <rect x="532" y="462" width="340" height="72" rx="10" fill="#fdf6e8"/>
+    <text x="548" y="490" font-size="15" fill="#816b43">Direction · onset · velocity</text>
+    <text x="548" y="516" font-size="15" fill="#816b43">Stability · uncertainty · endpoint</text>
+    <text x="533" y="572" font-size="15" fill="#816b43">Model outputs → structured evidence</text>
+
+    <path d="M906 444 H953" fill="none" stroke="#607b98" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <rect x="965" y="278" width="380" height="324" rx="16" fill="#fff" stroke="#ddb0aa" stroke-width="1.5"/>
+    <rect x="965" y="278" width="380" height="56" rx="16" fill="#f5dfda"/>
+    <text x="988" y="313" font-size="21" font-weight="700" fill="#55312d">3  VCWorld task reasoning</text>
+    <text x="988" y="370" font-size="18" font-weight="700" fill="#684843">Static + dynamic evidence</text>
+    <text x="988" y="402" font-size="16" fill="#684843">→ evidence-grounded task prompts</text>
+    <text x="988" y="431" font-size="16" fill="#684843">→ GeneTak / LLM integration</text>
+    <rect x="987" y="462" width="335" height="72" rx="10" fill="#fff3f0"/>
+    <text x="1003" y="490" font-size="15" fill="#84605b">DE: yes / no / insufficient</text>
+    <text x="1003" y="516" font-size="15" fill="#84605b">DIR: task-specific adapter</text>
+    <text x="988" y="572" font-size="15" fill="#84605b">Execution: API or local vLLM</text>
+
+    <text x="58" y="641" font-size="16" font-weight="700" fill="#294b6a">VCWorld: framework foundation  ·  DynamicVC: dynamic evidence extension  ·  scDFM: prediction module</text>
+    <text x="58" y="670" font-size="13" fill="#516981">Core release: dynamic extension and integration components; complete static KG/retrieval and benchmark evaluation remain external.</text>
+    <text x="60" y="730" font-size="13" fill="#71859a">ODE time is generative-flow position. Dynamic context is model-derived evidence requiring biological validation.</text>
+  </g>
+</svg>
